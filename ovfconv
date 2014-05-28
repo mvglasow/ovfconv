@@ -1,0 +1,104 @@
+#!/usr/bin/python
+
+__version__ = '0.1.0'
+__author__ = 'Michael von Glasow (michael [ -a- ] vonglasow.com)'
+__copyright__ = 'Copyright 2014, Michael von Glasow'
+__license__ = 'GPL'
+
+# Converts OVF files exported from XenServer 6.2 to a format understood by VMware Player 6.0
+
+import sys,os,subprocess
+from optparse import OptionParser
+import pxdom
+
+
+
+def main(options):
+  in_file = options['infile']
+  out_file = options['outfile']
+
+
+  #transmogrify_file
+  dom = pxdom.getDOMImplementation('')
+  parser = dom.createLSParser(dom.MODE_SYNCHRONOUS, None)
+  parser.domConfig.setParameter('entities', 0) # 1 -> exception if attribute values is set
+  #parser.domConfig.setParameter('disallow-doctype', 1)
+  parser.domConfig.setParameter('pxdom-resolve-resources', 1) # 1 -> replace &xyz; with text
+
+  input = dom.createLSInput()
+
+  # We need to do it this way because XenServer reports an incorrect UTF
+  # encoding (UTF-16 instead of UTF-8). By parsing string data we bypass this
+  # issue and output UTF-8 (nominally). Not tested with actual special
+  # characters (beyond 127) - they may get mangled up!
+  f = open(in_file, 'r')
+  inString = f.read()
+  f.close
+  input.stringData = inString
+  
+  document = parser.parse(input)
+
+  envelopes = document.getElementsByTagName("ovf:Envelope")
+  for envelope in envelopes:
+    #remove ovf:StartupSection
+    startupSections = envelope.getElementsByTagName("ovf:StartupSection")
+    while len(startupSections) > 0:
+      print "Removing unsupported ovf:StartupSection"
+      envelope.removeChild(startupSections[0])
+    #enter ovf:VirtualSystem
+    virtualSystems = envelope.getElementsByTagName("ovf:VirtualSystem")
+    for virtualSystem in virtualSystems:
+      #enter ovf:VirtualHardwareSection
+      virtualHardwareSections = virtualSystem.getElementsByTagName("ovf:VirtualHardwareSection")
+      for virtualHardwareSection in virtualHardwareSections:
+        #remove all xenovf:VirtualSystemOtherConfigurationData
+        #please don't cringe at "datas", it's ugly but correct grammar would break the naming convention
+        virtualSystemOtherConfigurationDatas = virtualHardwareSection.getElementsByTagName("xenovf:VirtualSystemOtherConfigurationData")
+        while len(virtualSystemOtherConfigurationDatas) > 0:
+          print "Removing unsupported xenovf:VirtualSystemOtherConfigurationData"
+          virtualHardwareSection.removeChild(virtualSystemOtherConfigurationDatas[0])
+        #TODO:add ovf:Item for SCSI host adapter?
+        #enter ovf:Item
+        items = virtualHardwareSection.getElementsByTagName("ovf:Item")
+        for item in items:
+          isHardDisk = False
+          resourceTypes = item.getElementsByTagName("rasd:ResourceType")
+          for resourceType in resourceTypes:
+            value = resourceType.firstChild.nodeValue
+            #if rasd:ResourceType has content "19"
+            if (value == "19"):
+              print "Changing unsupported resource type 19 to 17"
+              #set to "17"
+              resourceType.firstChild.nodeValue = "17"
+              isHardDisk = True
+          if isHardDisk:
+            #set rasd:Parent (if not yet present) with content "3" (InstanceID of SCSI host adapter)
+            parents = item.getElementsByTagName("rasd:Parent")
+            for parent in parents:
+              print "Changing parent to 3"
+              # FIXME: correct node value for parent
+              parent.firstChild.nodeValue = "3"
+            if (len(parents) == 0):
+              print "Hard disk has no parent, creating one"
+              newParent = document.createElement("rasd:Parent")
+              # FIXME: correct node value for parent
+              newParentValue = document.createTextNode("3")
+              newParent.appendChild(newParentValue)
+              item.appendChild(newParent)
+
+  output = document.implementation.createLSOutput()
+  output.systemId = out_file
+  output.encoding = 'utf-8'
+  serializer = document.implementation.createLSSerializer()
+  serializer.write(document, output)
+  
+  #strip_doctype(bw_file)
+
+if __name__ == '__main__':
+  parser = OptionParser()
+  parser.add_option("-i", "--infile", dest="infile", help="input filename, default is 'vm.ovf')", default="vm.ovf")
+  parser.add_option("-o", "--outfile", dest="outfile", help="output filename, default is 'vm-out.ovf')", default="vm-out.ovf")
+  (options, args) = parser.parse_args()
+  print options
+  main(options.__dict__)
+  sys.exit(0)
